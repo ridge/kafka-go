@@ -105,8 +105,6 @@ func makeGroupID() string {
 }
 
 func TestConn(t *testing.T) {
-	t.Parallel()
-
 	tests := []struct {
 		scenario   string
 		function   func(*testing.T, *Conn)
@@ -153,7 +151,7 @@ func TestConn(t *testing.T) {
 		},
 
 		{
-			scenario: "unchecked seeks allow the connection to be positionned outside the boundaries of the partition",
+			scenario: "unchecked seeks allow the connection to be positioned outside the boundaries of the partition",
 			function: testConnSeekDontCheck,
 		},
 
@@ -1027,7 +1025,7 @@ func testBrokers(t *testing.T, conn *Conn) {
 func TestReadPartitionsNoTopic(t *testing.T) {
 	conn, err := Dial("tcp", "127.0.0.1:9092")
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	defer conn.Close()
 

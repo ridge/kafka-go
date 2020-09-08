@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"math/rand"
+	"net"
 	"reflect"
 	"strconv"
 	"sync"
@@ -12,8 +13,6 @@ import (
 )
 
 func TestReader(t *testing.T) {
-	t.Parallel()
-
 	tests := []struct {
 		scenario string
 		function func(*testing.T, context.Context, *Reader)
@@ -268,10 +267,21 @@ func testReaderOutOfRangeGetsCanceled(t *testing.T, ctx context.Context, r *Read
 func createTopic(t *testing.T, topic string, partitions int) {
 	conn, err := Dial("tcp", "localhost:9092")
 	if err != nil {
-		t.Error("bad conn")
-		return
+		t.Fatal(err)
 	}
 	defer conn.Close()
+
+	controller, err := conn.Controller()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err = Dial("tcp", net.JoinHostPort(controller.Host, strconv.Itoa(controller.Port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
 
 	_, err = conn.createTopics(createTopicsRequestV0{
 		Topics: []createTopicsRequestV0Topic{
@@ -281,7 +291,7 @@ func createTopic(t *testing.T, topic string, partitions int) {
 				ReplicationFactor: 1,
 			},
 		},
-		Timeout: int32(30 * time.Second / time.Millisecond),
+		Timeout: milliseconds(time.Second),
 	})
 	switch err {
 	case nil:
@@ -289,14 +299,36 @@ func createTopic(t *testing.T, topic string, partitions int) {
 	case TopicAlreadyExists:
 		// ok
 	default:
-		t.Error("bad createTopics", err)
+		t.Error(err)
 		t.FailNow()
 	}
 }
 
-func TestReaderOnNonZeroPartition(t *testing.T) {
-	t.Parallel()
+func deleteTopic(t *testing.T, topic ...string) {
+	conn, err := Dial("tcp", "localhost:9092")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
 
+	controller, err := conn.Controller()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err = Dial("tcp", net.JoinHostPort(controller.Host, strconv.Itoa(controller.Port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	if err := conn.DeleteTopics(topic...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReaderOnNonZeroPartition(t *testing.T) {
 	tests := []struct {
 		scenario string
 		function func(*testing.T, context.Context, *Reader)
@@ -314,6 +346,7 @@ func TestReaderOnNonZeroPartition(t *testing.T) {
 
 			topic := makeTopic()
 			createTopic(t, topic, 2)
+			defer deleteTopic(t, topic)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -370,7 +403,6 @@ func TestReadTruncatedMessages(t *testing.T) {
 	//        include it in CI unit tests.
 	t.Skip()
 
-	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	r := NewReader(ReaderConfig{
@@ -482,8 +514,11 @@ func BenchmarkReader(b *testing.B) {
 func TestCloseLeavesGroup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
 	topic := makeTopic()
 	createTopic(t, topic, 1)
+	defer deleteTopic(t, topic)
+
 	groupID := makeGroupID()
 	r := NewReader(ReaderConfig{
 		Brokers:          []string{"localhost:9092"},
@@ -662,8 +697,6 @@ func TestExtractTopics(t *testing.T) {
 }
 
 func TestReaderConsumerGroup(t *testing.T) {
-	t.Parallel()
-
 	tests := []struct {
 		scenario       string
 		partitions     int
@@ -733,10 +766,14 @@ func TestReaderConsumerGroup(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.scenario, func(t *testing.T) {
+			// It appears that some of the tests depend on all these tests being
+			// run concurrently to pass... this is brittle and should be fixed
+			// at some point.
 			t.Parallel()
 
 			topic := makeTopic()
 			createTopic(t, topic, test.partitions)
+			defer deleteTopic(t, topic)
 
 			groupID := makeGroupID()
 			r := NewReader(ReaderConfig{
@@ -936,6 +973,7 @@ func testReaderConsumerGroupRebalanceAcrossTopics(t *testing.T, ctx context.Cont
 	// create a second reader that shares the groupID, but reads from a different topic
 	topic2 := makeTopic()
 	createTopic(t, topic2, 1)
+	defer deleteTopic(t, topic2)
 
 	r2 := NewReader(ReaderConfig{
 		Brokers:           r.config.Brokers,
@@ -1204,8 +1242,6 @@ func TestCommitOffsetsWithRetry(t *testing.T) {
 // than partitions in a group.
 // https://github.com/segmentio/kafka-go/issues/200
 func TestRebalanceTooManyConsumers(t *testing.T) {
-	t.Parallel()
-
 	ctx := context.Background()
 	conf := ReaderConfig{
 		Brokers: []string{"localhost:9092"},
@@ -1236,7 +1272,6 @@ func TestRebalanceTooManyConsumers(t *testing.T) {
 }
 
 func TestConsumerGroupWithMissingTopic(t *testing.T) {
-	t.Parallel()
 	t.Skip("this test doesn't work when the cluster is configured to auto-create topics")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1262,6 +1297,7 @@ func TestConsumerGroupWithMissingTopic(t *testing.T) {
 
 	time.Sleep(time.Second)
 	createTopic(t, conf.Topic, 1)
+	defer deleteTopic(t, conf.Topic)
 
 	w := NewWriter(WriterConfig{
 		Brokers:      r.config.Brokers,
@@ -1284,13 +1320,14 @@ func TestConsumerGroupWithMissingTopic(t *testing.T) {
 	}
 }
 
-func getOffsets(t *testing.T, config ReaderConfig) offsetFetchResponseV1 {
+func getOffsets(t *testing.T, config ReaderConfig) map[int]int64 {
 	// minimal config required to lookup coordinator
 	cg := ConsumerGroup{
 		config: ConsumerGroupConfig{
 			ID:      config.GroupID,
 			Brokers: config.Brokers,
 			Dialer:  config.Dialer,
+			connect: connect,
 		},
 	}
 
@@ -1311,7 +1348,17 @@ func getOffsets(t *testing.T, config ReaderConfig) offsetFetchResponseV1 {
 		t.Errorf("bad fetchOffsets: %v", err)
 	}
 
-	return offsets
+	m := map[int]int64{}
+
+	for _, r := range offsets.Responses {
+		if r.Topic == config.Topic {
+			for _, p := range r.PartitionResponses {
+				m[int(p.Partition)] = p.Offset
+			}
+		}
+	}
+
+	return m
 }
 
 func TestReaderClose(t *testing.T) {

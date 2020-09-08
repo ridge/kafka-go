@@ -2,17 +2,13 @@ package kafka
 
 import (
 	"context"
-	"errors"
 	"io"
 	"math"
-	"strings"
 	"testing"
 	"time"
 )
 
 func TestWriter(t *testing.T) {
-	t.Parallel()
-
 	tests := []struct {
 		scenario string
 		function func(*testing.T)
@@ -31,18 +27,22 @@ func TestWriter(t *testing.T) {
 			scenario: "running out of max attempts should return an error",
 			function: testWriterMaxAttemptsErr,
 		},
+
 		{
 			scenario: "writing a message larger then the max bytes should return an error",
 			function: testWriterMaxBytes,
 		},
+
 		{
 			scenario: "writing a batch of message based on batch byte size",
 			function: testWriterBatchBytes,
 		},
+
 		{
 			scenario: "writing a batch of messages",
 			function: testWriterBatchSize,
 		},
+
 		{
 			scenario: "writing messsages with a small batch byte size",
 			function: testWriterSmallBatchBytes,
@@ -67,8 +67,9 @@ func newTestWriter(config WriterConfig) *Writer {
 
 func testWriterClose(t *testing.T) {
 	const topic = "test-writer-0"
-
 	createTopic(t, topic, 1)
+	defer deleteTopic(t, topic)
+
 	w := newTestWriter(WriterConfig{
 		Topic: topic,
 	})
@@ -80,8 +81,9 @@ func testWriterClose(t *testing.T) {
 
 func testWriterRoundRobin1(t *testing.T) {
 	const topic = "test-writer-1"
-
 	createTopic(t, topic, 1)
+	defer deleteTopic(t, topic)
+
 	offset, err := readOffset(topic, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -140,38 +142,16 @@ func TestValidateWriter(t *testing.T) {
 	}
 }
 
-type fakeWriter struct{}
-
-func (f *fakeWriter) messages() chan<- writerMessage {
-	ch := make(chan writerMessage, 1)
-
-	go func() {
-		for {
-			msg := <-ch
-			msg.res <- &writerError{
-				err: errors.New("bad attempt"),
-			}
-		}
-	}()
-
-	return ch
-}
-
-func (f *fakeWriter) close() {
-
-}
-
 func testWriterMaxAttemptsErr(t *testing.T) {
-	const topic = "test-writer-2"
-
+	topic := makeTopic()
 	createTopic(t, topic, 1)
+	defer deleteTopic(t, topic)
+
 	w := newTestWriter(WriterConfig{
+		Brokers:     []string{"localhost:9999"}, // nothing is listening here
 		Topic:       topic,
-		MaxAttempts: 1,
+		MaxAttempts: 3,
 		Balancer:    &RoundRobin{},
-		newPartitionWriter: func(p int, config WriterConfig, stats *writerStats) partitionWriter {
-			return &fakeWriter{}
-		},
 	})
 	defer w.Close()
 
@@ -180,18 +160,14 @@ func testWriterMaxAttemptsErr(t *testing.T) {
 	}); err == nil {
 		t.Error("expected error")
 		return
-	} else if err != nil {
-		if !strings.Contains(err.Error(), "bad attempt") {
-			t.Errorf("unexpected error: %s", err)
-			return
-		}
 	}
 }
 
 func testWriterMaxBytes(t *testing.T) {
 	topic := makeTopic()
-
 	createTopic(t, topic, 1)
+	defer deleteTopic(t, topic)
+
 	w := newTestWriter(WriterConfig{
 		Topic:      topic,
 		BatchBytes: 25,
@@ -282,9 +258,11 @@ func readPartition(topic string, partition int, offset int64) (msgs []Message, e
 func testWriterBatchBytes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	const topic = "test-writer-1-bytes"
 
+	const topic = "test-writer-1-bytes"
 	createTopic(t, topic, 1)
+	defer deleteTopic(t, topic)
+
 	offset, err := readOffset(topic, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -336,6 +314,8 @@ func testWriterBatchSize(t *testing.T) {
 
 	topic := makeTopic()
 	createTopic(t, topic, 1)
+	defer deleteTopic(t, topic)
+
 	offset, err := readOffset(topic, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -387,6 +367,8 @@ func testWriterSmallBatchBytes(t *testing.T) {
 
 	topic := makeTopic()
 	createTopic(t, topic, 1)
+	defer deleteTopic(t, topic)
+
 	offset, err := readOffset(topic, 0)
 	if err != nil {
 		t.Fatal(err)
